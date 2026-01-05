@@ -1,6 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { put } from '@vercel/blob';
-import { v4 as uuidv4 } from 'uuid';
 import { SUPERHEROES, GENERATION_PROMPT_TEMPLATE } from '@/lib/constants';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 
@@ -11,7 +9,7 @@ const POLLINATIONS_BASE = 'https://image.pollinations.ai/prompt';
 const POLLINATIONS_MODEL = 'kontext';
 
 interface GenerateRequest {
-    imageUrl: string; // Public URL of uploaded image
+    imageUrl: string; // Public HTTPS URL of the image
     selectedHero: string;
     style?: 'realistic' | 'comic' | 'anime';
     seed?: number;
@@ -33,7 +31,7 @@ function buildPrompt(hero: string, style: string): string {
 }
 
 // ============================================================================
-// MAIN API HANDLER
+// MAIN API HANDLER - Returns image bytes directly (no disk writes)
 // ============================================================================
 
 export async function POST(request: NextRequest) {
@@ -58,7 +56,15 @@ export async function POST(request: NextRequest) {
         // ====================================================================
         if (!imageUrl) {
             return NextResponse.json(
-                { error: 'Image URL is required' },
+                { error: 'Image URL is required. Please provide a public HTTPS image URL.' },
+                { status: 400 }
+            );
+        }
+
+        // Validate URL format
+        if (!imageUrl.startsWith('https://')) {
+            return NextResponse.json(
+                { error: 'Image URL must be a public HTTPS URL (e.g. from ImgBB, Imgur).' },
                 { status: 400 }
             );
         }
@@ -112,7 +118,7 @@ export async function POST(request: NextRequest) {
             pollinationsUrl += `&seed=${seed}`;
         }
 
-        console.log('Pollinations URL:', pollinationsUrl.substring(0, 150) + '...');
+        console.log('Pollinations URL:', pollinationsUrl.substring(0, 200) + '...');
 
         let response: Response;
         try {
@@ -167,13 +173,13 @@ export async function POST(request: NextRequest) {
         }
 
         // ====================================================================
-        // GET IMAGE BYTES AND UPLOAD TO VERCEL BLOB
+        // GET IMAGE BYTES AND RETURN DIRECTLY (NO DISK WRITE)
         // ====================================================================
-        const imageBuffer = Buffer.from(await response.arrayBuffer());
+        const imageBuffer = await response.arrayBuffer();
 
         // Validate image size
-        if (imageBuffer.length < 1000) {
-            console.warn('Image too small:', imageBuffer.length, 'bytes');
+        if (imageBuffer.byteLength < 1000) {
+            console.warn('Image too small:', imageBuffer.byteLength, 'bytes');
             return NextResponse.json(
                 { error: 'Generated image is too small. Please try again.' },
                 { status: 502 }
@@ -181,30 +187,20 @@ export async function POST(request: NextRequest) {
         }
 
         console.log('✓ Image received successfully');
-        console.log('  Size:', imageBuffer.length, 'bytes');
-
-        // Upload to Vercel Blob
-        const filename = `generated/${uuidv4()}.png`;
-        const blob = await put(filename, imageBuffer, {
-            access: 'public',
-            contentType: 'image/png',
-        });
-
-        console.log('  Uploaded to Vercel Blob:', blob.url);
+        console.log('  Size:', imageBuffer.byteLength, 'bytes');
         console.log('='.repeat(60));
 
-        return NextResponse.json(
-            {
-                generatedUrl: blob.url,
-                hero: selectedHero,
-                style,
-                seed: seed || null,
-            },
-            {
-                status: 200,
-                headers: { 'X-RateLimit-Remaining': remaining.toString() }
+        // Return image bytes directly
+        return new NextResponse(imageBuffer, {
+            status: 200,
+            headers: {
+                'Content-Type': contentType || 'image/png',
+                'Cache-Control': 'no-store',
+                'X-RateLimit-Remaining': remaining.toString(),
+                'X-Hero': selectedHero,
+                'X-Style': style,
             }
-        );
+        });
 
     } catch (error) {
         console.error('Generate error:', error);

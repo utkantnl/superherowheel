@@ -19,23 +19,16 @@ export default function ResultPanel({
     error,
     onRetry,
 }: ResultPanelProps) {
-    const handleDownload = async () => {
+    const handleDownload = () => {
         if (!generatedImage) return;
 
-        try {
-            const response = await fetch(generatedImage);
-            const blob = await response.blob();
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `superhero-${selectedHero?.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}.png`;
-            document.body.appendChild(a);
-            a.click();
-            window.URL.revokeObjectURL(url);
-            document.body.removeChild(a);
-        } catch (err) {
-            console.error('Download failed:', err);
-        }
+        // generatedImage is already a Blob URL, use it directly
+        const a = document.createElement('a');
+        a.href = generatedImage;
+        a.download = `superhero-${selectedHero?.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}.png`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
     };
 
     if (!originalImage && !generatedImage && !isGenerating) {

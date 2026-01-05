@@ -17,16 +17,16 @@ interface GenerationState {
 }
 
 export default function WheelPage() {
-    // Upload state - stores public URL from Vercel Blob
-    const [uploadedImage, setUploadedImage] = useState<string | null>(null);
-    const [isUploading, setIsUploading] = useState(false);
+    // Photo URL state (public HTTPS URL)
+    const [photoUrl, setPhotoUrl] = useState<string>('');
 
     // Wheel state
     const [selectedHero, setSelectedHero] = useState<string | null>(null);
     const [isSpinning, setIsSpinning] = useState(false);
 
-    // Generation state
+    // Generation state - generatedImage is now a Blob URL
     const [generatedImage, setGeneratedImage] = useState<string | null>(null);
+    const [generatedBlob, setGeneratedBlob] = useState<Blob | null>(null);
     const [isGenerating, setIsGenerating] = useState(false);
     const [generationError, setGenerationError] = useState<string | null>(null);
 
@@ -36,24 +36,19 @@ export default function WheelPage() {
     // History tracking
     const [currentGeneration, setCurrentGeneration] = useState<GenerationState | null>(null);
 
-    // Handle image upload - receives public URL from Vercel Blob
-    const handleUpload = useCallback((imageUrl: string) => {
-        setUploadedImage(imageUrl);
-        setIsUploading(false);
-        // Clear previous results when new image is uploaded
+    // Handle photo URL change
+    const handlePhotoUrlChange = useCallback((url: string) => {
+        setPhotoUrl(url);
+        // Clear previous results when URL changes
         setSelectedHero(null);
+        if (generatedImage) {
+            URL.revokeObjectURL(generatedImage);
+        }
         setGeneratedImage(null);
+        setGeneratedBlob(null);
         setGenerationError(null);
         setCurrentGeneration(null);
-    }, []);
-
-    const handleUploadClear = useCallback(() => {
-        setUploadedImage(null);
-        setSelectedHero(null);
-        setGeneratedImage(null);
-        setGenerationError(null);
-        setCurrentGeneration(null);
-    }, []);
+    }, [generatedImage]);
 
     // Handle spin complete
     const handleSpinComplete = useCallback(async (hero: string) => {
@@ -61,18 +56,22 @@ export default function WheelPage() {
         setIsSpinning(false);
 
         // Auto-generate after spin
-        if (uploadedImage) {
+        if (photoUrl) {
             await generateSuperheroImage(hero);
         }
-    }, [uploadedImage, artStyle]);
+    }, [photoUrl, artStyle]);
 
-    // Generate superhero image - sends imageUrl to Pollinations via API
+    // Generate superhero image - receives Blob response
     const generateSuperheroImage = async (hero: string) => {
-        if (!uploadedImage) return;
+        if (!photoUrl) return;
 
         setIsGenerating(true);
         setGenerationError(null);
+        if (generatedImage) {
+            URL.revokeObjectURL(generatedImage);
+        }
         setGeneratedImage(null);
+        setGeneratedBlob(null);
 
         try {
             const response = await fetch('/api/generate', {
@@ -81,22 +80,34 @@ export default function WheelPage() {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    imageUrl: uploadedImage, // Send public URL
+                    imageUrl: photoUrl,
                     selectedHero: hero,
                     style: artStyle,
                 }),
             });
 
-            const data = await response.json();
+            // Check if response is an image
+            const contentType = response.headers.get('content-type') || '';
 
-            if (!response.ok) {
+            if (!contentType.startsWith('image/')) {
+                // Response is JSON error
+                const data = await response.json();
                 throw new Error(data.error || 'Generation failed');
             }
 
-            setGeneratedImage(data.generatedUrl);
+            if (!response.ok) {
+                throw new Error(`Generation failed: ${response.status}`);
+            }
+
+            // Response is image bytes - create Blob URL
+            const blob = await response.blob();
+            const objectUrl = URL.createObjectURL(blob);
+
+            setGeneratedImage(objectUrl);
+            setGeneratedBlob(blob);
             setCurrentGeneration({
-                original: uploadedImage || '',
-                generated: data.generatedUrl,
+                original: photoUrl,
+                generated: objectUrl,
                 hero: hero,
             });
         } catch (error) {
@@ -114,11 +125,11 @@ export default function WheelPage() {
         if (selectedHero) {
             generateSuperheroImage(selectedHero);
         }
-    }, [selectedHero, uploadedImage, artStyle]);
+    }, [selectedHero, photoUrl, artStyle]);
 
     // Handle history selection
     const handleHistorySelect = useCallback((item: HistoryItem) => {
-        setUploadedImage(item.originalImage);
+        setPhotoUrl(item.originalImage);
         setGeneratedImage(item.generatedImage);
         setSelectedHero(item.hero);
         setGenerationError(null);
@@ -174,13 +185,12 @@ export default function WheelPage() {
                         <section className="bg-gray-900/40 backdrop-blur-xl rounded-2xl sm:rounded-3xl border border-gray-800/50 p-4 sm:p-5 shadow-2xl">
                             <h2 className="text-base sm:text-lg font-bold text-white mb-2 sm:mb-3 flex items-center gap-2">
                                 <span className="text-lg sm:text-xl">📸</span>
-                                Adım 1: Fotoğrafını Yükle
+                                Adım 1: Foto URL Gir
                             </h2>
                             <ImageUpload
-                                onUpload={handleUpload}
-                                onClear={handleUploadClear}
-                                uploadedImage={uploadedImage}
-                                isUploading={isUploading}
+                                onPhotoUrlChange={handlePhotoUrlChange}
+                                photoUrl={photoUrl}
+                                isGenerating={isGenerating}
                             />
                         </section>
 
@@ -206,7 +216,7 @@ export default function WheelPage() {
                             <div className="flex justify-center items-center min-h-[350px] sm:min-h-[500px] md:min-h-[620px] overflow-visible">
                                 <SpinWheel
                                     onSpinComplete={handleSpinComplete}
-                                    disabled={!uploadedImage || isGenerating}
+                                    disabled={!photoUrl || isGenerating}
                                     isSpinning={isSpinning}
                                 />
                             </div>
@@ -221,7 +231,7 @@ export default function WheelPage() {
                                 Dönüşümün
                             </h2>
                             <ResultPanel
-                                originalImage={uploadedImage}
+                                originalImage={photoUrl}
                                 generatedImage={generatedImage}
                                 selectedHero={selectedHero}
                                 isGenerating={isGenerating}
