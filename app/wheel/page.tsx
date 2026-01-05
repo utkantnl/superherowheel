@@ -17,9 +17,8 @@ interface GenerationState {
 }
 
 export default function WheelPage() {
-    // Upload state - now stores both URL (for display) and base64 (for API)
+    // Upload state - stores public URL from Vercel Blob
     const [uploadedImage, setUploadedImage] = useState<string | null>(null);
-    const [uploadedImageBase64, setUploadedImageBase64] = useState<string | null>(null);
     const [isUploading, setIsUploading] = useState(false);
 
     // Wheel state
@@ -37,10 +36,9 @@ export default function WheelPage() {
     // History tracking
     const [currentGeneration, setCurrentGeneration] = useState<GenerationState | null>(null);
 
-    // Handle image upload - now also receives base64 data
-    const handleUpload = useCallback((imageUrl: string, imageBase64: string) => {
+    // Handle image upload - receives public URL from Vercel Blob
+    const handleUpload = useCallback((imageUrl: string) => {
         setUploadedImage(imageUrl);
-        setUploadedImageBase64(imageBase64);
         setIsUploading(false);
         // Clear previous results when new image is uploaded
         setSelectedHero(null);
@@ -51,7 +49,6 @@ export default function WheelPage() {
 
     const handleUploadClear = useCallback(() => {
         setUploadedImage(null);
-        setUploadedImageBase64(null);
         setSelectedHero(null);
         setGeneratedImage(null);
         setGenerationError(null);
@@ -64,14 +61,14 @@ export default function WheelPage() {
         setIsSpinning(false);
 
         // Auto-generate after spin
-        if (uploadedImageBase64) {
+        if (uploadedImage) {
             await generateSuperheroImage(hero);
         }
-    }, [uploadedImageBase64, artStyle]);
+    }, [uploadedImage, artStyle]);
 
-    // Generate superhero image - now sends base64 instead of URL
+    // Generate superhero image - sends imageUrl to Pollinations via API
     const generateSuperheroImage = async (hero: string) => {
-        if (!uploadedImageBase64) return;
+        if (!uploadedImage) return;
 
         setIsGenerating(true);
         setGenerationError(null);
@@ -84,7 +81,7 @@ export default function WheelPage() {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    imageBase64: uploadedImageBase64, // Send base64 instead of URL
+                    imageUrl: uploadedImage, // Send public URL
                     selectedHero: hero,
                     style: artStyle,
                 }),
@@ -117,7 +114,7 @@ export default function WheelPage() {
         if (selectedHero) {
             generateSuperheroImage(selectedHero);
         }
-    }, [selectedHero, uploadedImageBase64, artStyle]);
+    }, [selectedHero, uploadedImage, artStyle]);
 
     // Handle history selection
     const handleHistorySelect = useCallback((item: HistoryItem) => {
@@ -209,7 +206,7 @@ export default function WheelPage() {
                             <div className="flex justify-center items-center min-h-[350px] sm:min-h-[500px] md:min-h-[620px] overflow-visible">
                                 <SpinWheel
                                     onSpinComplete={handleSpinComplete}
-                                    disabled={!uploadedImageBase64 || isGenerating}
+                                    disabled={!uploadedImage || isGenerating}
                                     isSpinning={isSpinning}
                                 />
                             </div>

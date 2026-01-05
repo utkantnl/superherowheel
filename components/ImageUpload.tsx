@@ -5,21 +5,13 @@ import { ALLOWED_IMAGE_TYPES, MAX_IMAGE_SIZE } from '@/lib/constants';
 import { formatBytes } from '@/lib/utils';
 
 interface ImageUploadProps {
-    onUpload: (imageUrl: string, imageBase64: string) => void;
+    onUpload: (imageUrl: string) => void;
     onClear: () => void;
     uploadedImage: string | null;
     isUploading: boolean;
 }
 
-// Convert File to base64 data URL
-async function fileToBase64(file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result as string);
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-    });
-}
+
 
 export default function ImageUpload({ onUpload, onClear, uploadedImage, isUploading }: ImageUploadProps) {
     const [isDragging, setIsDragging] = useState(false);
@@ -50,11 +42,7 @@ export default function ImageUpload({ onUpload, onClear, uploadedImage, isUpload
             // Show progress
             setUploadProgress(30);
 
-            // Convert file to base64 (for local AI processing)
-            const base64Data = await fileToBase64(file);
-            setUploadProgress(60);
-
-            // Also upload to server for display URL
+            // Upload to server (Vercel Blob)
             const formData = new FormData();
             formData.append('image', file);
 
@@ -63,7 +51,7 @@ export default function ImageUpload({ onUpload, onClear, uploadedImage, isUpload
                 body: formData,
             });
 
-            setUploadProgress(90);
+            setUploadProgress(80);
 
             if (!response.ok) {
                 const data = await response.json();
@@ -73,9 +61,9 @@ export default function ImageUpload({ onUpload, onClear, uploadedImage, isUpload
             const data = await response.json();
             setUploadProgress(100);
 
-            // Pass both URL (for display) and base64 (for AI)
+            // Pass URL to parent
             setTimeout(() => {
-                onUpload(data.imageUrl, base64Data);
+                onUpload(data.imageUrl);
                 setUploadProgress(0);
             }, 300);
         } catch (err) {

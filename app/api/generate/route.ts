@@ -1,28 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { writeFile, mkdir } from 'fs/promises';
-import path from 'path';
+import { put } from '@vercel/blob';
 import { v4 as uuidv4 } from 'uuid';
-import OpenAI from 'openai';
 import { SUPERHEROES, GENERATION_PROMPT_TEMPLATE } from '@/lib/constants';
-import { getBaseUrl } from '@/lib/utils';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 
 // ============================================================================
-// LOCAL INFERENCE SERVER CONFIGURATION
+// POLLINATIONS API CONFIGURATION
 // ============================================================================
-const INFERENCE_BASE_URL = 'http://127.0.0.1:8045/v1';
-const INFERENCE_MODEL = 'gemini-3-pro-image';
-
-// Initialize OpenAI client pointing to local server
-const openai = new OpenAI({
-    baseURL: INFERENCE_BASE_URL,
-    apiKey: process.env.OPENAI_API_KEY || 'not-needed', // May not be required for local
-});
+const POLLINATIONS_BASE = 'https://image.pollinations.ai/prompt';
+const POLLINATIONS_MODEL = 'kontext';
 
 interface GenerateRequest {
-    imageBase64: string; // Base64 encoded image data
+    imageUrl: string; // Public URL of uploaded image
     selectedHero: string;
     style?: 'realistic' | 'comic' | 'anime';
+    seed?: number;
 }
 
 const STYLE_MODIFIERS: Record<string, string> = {
@@ -39,51 +31,6 @@ function buildPrompt(hero: string, style: string): string {
     const styleModifier = STYLE_MODIFIERS[style] || STYLE_MODIFIERS.realistic;
     return `${basePrompt} ${styleModifier}`;
 }
-
-// ============================================================================
-// IMAGE EXTRACTION HELPERS
-// ============================================================================
-
-// Extract base64 image from response content
-function extractImageFromContent(content: string): Buffer | null {
-    // Case 1: Markdown image format: ![...](data:image/...;base64,...)
-    // This is what gemini-3-pro-image returns
-    const markdownMatch = content.match(/!\[.*?\]\((data:image\/[^;]+;base64,([A-Za-z0-9+/=]+))\)/);
-    if (markdownMatch) {
-        console.log('Matched Markdown image format');
-        return Buffer.from(markdownMatch[2], 'base64');
-    }
-
-    // Case 2: Content is already base64 data URL
-    if (content.startsWith('data:image')) {
-        const base64Match = content.match(/base64,(.+)/);
-        if (base64Match) {
-            console.log('Matched data URL format');
-            return Buffer.from(base64Match[1], 'base64');
-        }
-    }
-
-    // Case 3: Content is raw base64 (no data: prefix)
-    if (/^[A-Za-z0-9+/=]+$/.test(content.replace(/\s/g, ''))) {
-        try {
-            const buffer = Buffer.from(content.replace(/\s/g, ''), 'base64');
-            if (buffer[0] === 0x89 && buffer[1] === 0x50) return buffer; // PNG
-            if (buffer[0] === 0xFF && buffer[1] === 0xD8) return buffer; // JPEG
-        } catch {
-            // Not valid base64
-        }
-    }
-
-    // Case 4: Just extract any data URL from content
-    const anyDataUrlMatch = content.match(/data:image\/[^;]+;base64,([A-Za-z0-9+/=]+)/);
-    if (anyDataUrlMatch) {
-        console.log('Matched embedded data URL');
-        return Buffer.from(anyDataUrlMatch[1], 'base64');
-    }
-
-    return null;
-}
-
 
 // ============================================================================
 // MAIN API HANDLER
@@ -104,14 +51,14 @@ export async function POST(request: NextRequest) {
 
         // Parse request body
         const body: GenerateRequest = await request.json();
-        const { imageBase64, selectedHero, style = 'realistic' } = body;
+        const { imageUrl, selectedHero, style = 'realistic', seed } = body;
 
         // ====================================================================
         // VALIDATION
         // ====================================================================
-        if (!imageBase64) {
+        if (!imageUrl) {
             return NextResponse.json(
-                { error: 'Image data is required (imageBase64)' },
+                { error: 'Image URL is required' },
                 { status: 400 }
             );
         }
@@ -145,98 +92,84 @@ export async function POST(request: NextRequest) {
         const prompt = buildPrompt(selectedHero, style);
 
         console.log('='.repeat(60));
-        console.log('LOCAL INFERENCE REQUEST');
+        console.log('POLLINATIONS API REQUEST');
         console.log('='.repeat(60));
-        console.log('Server:', INFERENCE_BASE_URL);
-        console.log('Model:', INFERENCE_MODEL);
+        console.log('Model:', POLLINATIONS_MODEL);
         console.log('Hero:', selectedHero);
         console.log('Style:', style);
         console.log('Prompt:', prompt.substring(0, 100) + '...');
-        console.log('Image data length:', imageBase64.length);
+        console.log('Image URL:', imageUrl);
 
         // ====================================================================
-        // CALL LOCAL INFERENCE SERVER
+        // CALL POLLINATIONS API
         // ====================================================================
-        let response;
+        const encodedPrompt = encodeURIComponent(prompt);
+        const encodedImageUrl = encodeURIComponent(imageUrl);
+
+        let pollinationsUrl = `${POLLINATIONS_BASE}/${encodedPrompt}?model=${POLLINATIONS_MODEL}&width=1024&height=1024&safe=true&image=${encodedImageUrl}`;
+
+        if (seed) {
+            pollinationsUrl += `&seed=${seed}`;
+        }
+
+        console.log('Pollinations URL:', pollinationsUrl.substring(0, 150) + '...');
+
+        let response: Response;
         try {
-            // Prepare the message content with image
-            const messageContent = [
-                {
-                    type: 'text' as const,
-                    text: prompt,
-                },
-                {
-                    type: 'image_url' as const,
-                    image_url: {
-                        url: imageBase64.startsWith('data:')
-                            ? imageBase64
-                            : `data:image/png;base64,${imageBase64}`,
-                    },
-                },
-            ];
-
-            response = await openai.chat.completions.create({
-                model: INFERENCE_MODEL,
-                messages: [
-                    {
-                        role: 'user',
-                        content: messageContent,
-                    },
-                ],
-                // @ts-expect-error - extra_body for custom params
-                extra_body: {
-                    size: '1024x1024',
+            response = await fetch(pollinationsUrl, {
+                method: 'GET',
+                headers: {
+                    'Accept': 'image/*',
                 },
             });
 
-            console.log('Response received');
-            console.log('Choices:', response.choices?.length || 0);
+            console.log('Response status:', response.status);
+            console.log('Response URL (final):', response.url);
+            console.log('Content-Type:', response.headers.get('content-type'));
 
-        } catch (apiError) {
-            console.error('Inference API error:', apiError);
+        } catch (fetchError) {
+            console.error('Pollinations fetch error:', fetchError);
             return NextResponse.json(
                 {
                     error: 'Failed to connect to image generation server.',
-                    details: String(apiError)
+                    details: String(fetchError)
                 },
                 { status: 502 }
             );
         }
 
         // ====================================================================
-        // EXTRACT IMAGE FROM RESPONSE
+        // VALIDATE RESPONSE
         // ====================================================================
-        const choice = response.choices?.[0];
-        if (!choice || !choice.message?.content) {
-            console.error('No content in response');
-            console.error('Full response:', JSON.stringify(response, null, 2));
-            return NextResponse.json(
-                { error: 'No image generated. Empty response from server.' },
-                { status: 502 }
-            );
-        }
+        const contentType = response.headers.get('content-type') || '';
 
-        const content = choice.message.content;
-        console.log('Content type:', typeof content);
-        console.log('Content length:', content.length);
-        console.log('Content preview:',
-            typeof content === 'string' ? content.substring(0, 100) + '...' : 'non-string'
-        );
+        if (!contentType.startsWith('image/')) {
+            // Response is not an image - log and return error
+            const textContent = await response.text();
+            console.error('Invalid response content-type:', contentType);
+            console.error('Response body (first 300 chars):', textContent.substring(0, 300));
 
-        // Extract image buffer from content
-        const imageBuffer = extractImageFromContent(content);
-
-        if (!imageBuffer) {
-            console.error('Could not extract image from content');
-            console.error('Content:', content.substring(0, 500));
             return NextResponse.json(
                 {
-                    error: 'Invalid response format. Could not extract image.',
-                    details: content.substring(0, 200)
+                    error: 'Image generation failed. Server returned non-image response.',
+                    details: textContent.substring(0, 300),
+                    contentType,
                 },
                 { status: 502 }
             );
         }
+
+        if (!response.ok) {
+            return NextResponse.json(
+                { error: `Pollinations API error: ${response.status} ${response.statusText}` },
+                { status: 502 }
+            );
+        }
+
+        // ====================================================================
+        // GET IMAGE BYTES AND UPLOAD TO VERCEL BLOB
+        // ====================================================================
+        const imageBuffer = Buffer.from(await response.arrayBuffer());
 
         // Validate image size
         if (imageBuffer.length < 1000) {
@@ -247,31 +180,25 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        console.log('✓ Image extracted successfully');
+        console.log('✓ Image received successfully');
         console.log('  Size:', imageBuffer.length, 'bytes');
 
-        // ====================================================================
-        // SAVE IMAGE
-        // ====================================================================
-        const filename = `${uuidv4()}.png`;
-        const generatedDir = path.join(process.cwd(), 'public', 'generated');
-        await mkdir(generatedDir, { recursive: true });
+        // Upload to Vercel Blob
+        const filename = `generated/${uuidv4()}.png`;
+        const blob = await put(filename, imageBuffer, {
+            access: 'public',
+            contentType: 'image/png',
+        });
 
-        const filepath = path.join(generatedDir, filename);
-        await writeFile(filepath, imageBuffer);
-
-        const baseUrl = getBaseUrl();
-        const generatedUrl = `${baseUrl}/generated/${filename}`;
-
-        console.log('  Saved to:', filepath);
-        console.log('  Public URL:', generatedUrl);
+        console.log('  Uploaded to Vercel Blob:', blob.url);
         console.log('='.repeat(60));
 
         return NextResponse.json(
             {
-                generatedUrl,
+                generatedUrl: blob.url,
                 hero: selectedHero,
                 style,
+                seed: seed || null,
             },
             {
                 status: 200,

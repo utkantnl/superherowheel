@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { writeFile, mkdir } from 'fs/promises';
-import path from 'path';
+import { put } from '@vercel/blob';
 import { v4 as uuidv4 } from 'uuid';
 import { ALLOWED_IMAGE_TYPES, MAX_IMAGE_SIZE } from '@/lib/constants';
-import { getMimeTypeExtension, getBaseUrl } from '@/lib/utils';
+import { getMimeTypeExtension } from '@/lib/utils';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 
 export async function POST(request: NextRequest) {
@@ -51,27 +50,24 @@ export async function POST(request: NextRequest) {
 
         // Generate unique filename
         const ext = getMimeTypeExtension(file.type);
-        const filename = `${uuidv4()}.${ext}`;
+        const filename = `uploads/${uuidv4()}.${ext}`;
 
-        // Ensure uploads directory exists
-        const uploadsDir = path.join(process.cwd(), 'public', 'uploads');
-        await mkdir(uploadsDir, { recursive: true });
-
-        // Read file buffer and save
+        // Read file buffer
         const bytes = await file.arrayBuffer();
         const buffer = Buffer.from(bytes);
 
-        const filepath = path.join(uploadsDir, filename);
-        await writeFile(filepath, buffer);
+        // Upload to Vercel Blob
+        const blob = await put(filename, buffer, {
+            access: 'public',
+            contentType: file.type,
+        });
 
-        // Build public URL
-        const baseUrl = getBaseUrl();
-        const imageUrl = `${baseUrl}/uploads/${filename}`;
+        console.log('Uploaded to Vercel Blob:', blob.url);
 
         return NextResponse.json(
             {
-                imageUrl,
-                filename,
+                imageUrl: blob.url,
+                filename: blob.pathname,
                 size: file.size,
                 type: file.type
             },
